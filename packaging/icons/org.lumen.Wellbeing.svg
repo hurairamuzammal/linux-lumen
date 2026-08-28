@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Lumen">
+  <rect width="128" height="128" rx="28" fill="#141A22"/>
+  <circle cx="64" cy="58" r="18" fill="#2DDFC8"/>
+  <path d="M28 92c12-18 24-28 36-28s24 10 36 28" fill="none" stroke="#2DDFC8" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="96" cy="36" r="5" fill="#E7ECF4"/>
+</svg>

@@ -1,0 +1,36 @@
+#!/bin/sh
+# Lumen launcher — UI by default, collector via "collect"
+set -e
+PREFIX="${LUMEN_PREFIX:-$HOME/.local}"
+SHARE="${LUMEN_SHARE:-$PREFIX/share/lumen}"
+SRC="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+
+if [ -f "$SHARE/lumen_app.py" ]; then
+  APP="$SHARE/lumen_app.py"
+  WEB="$SHARE/web"
+elif [ -f "$SRC/ui/lumen_app.py" ]; then
+  APP="$SRC/ui/lumen_app.py"
+  WEB="$SRC/ui/web"
+else
+  APP="/usr/local/share/lumen/lumen_app.py"
+  WEB="/usr/local/share/lumen/web"
+fi
+
+cmd="${1:-}"
+case "$cmd" in
+  collect|--collect)
+    shift
+    exec "${PREFIX}/bin/lumen-collect" "$@"
+    ;;
+  status|--status)
+    if [ -f "$HOME/.local/share/lumen/current.json" ]; then
+      cat "$HOME/.local/share/lumen/current.json"
+    else
+      echo "collector has not written a snapshot yet"
+    fi
+    ;;
+  *)
+    export LUMEN_WEB="$WEB"
+    exec python3 "$APP" "$@"
+    ;;
+esac

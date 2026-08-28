@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Lumen
+GenericName=Digital Wellbeing
+Comment=See how you spent the day — screen time, idle, sleep, battery
+Exec=@BINDIR@/lumen
+Icon=org.lumen.Wellbeing
+Terminal=false
+Categories=Utility;Monitor;GTK;
+StartupNotify=true
+StartupWMClass=org.lumen.Wellbeing
+Keywords=wellbeing;screen time;battery;activity;usage;

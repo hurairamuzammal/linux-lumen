@@ -1,0 +1,77 @@
+{
+  "product": "Lumen",
+  "visualDirection": "Premium wellness companion inside a FieldQuote-style command center",
+  "palette": {
+    "background": "#E7ECF4",
+    "surface": "#FFFFFF",
+    "surfaceMuted": "#F4F7FB",
+    "sidebar": "#141A22",
+    "textPrimary": "#17202B",
+    "textSecondary": "#667085",
+    "border": "#E4E9F1",
+    "accentPrimary": "#2DDFC8",
+    "accentSecondary": "#1B2430",
+    "success": "#2DDFC8",
+    "warning": "#F0A04B",
+    "danger": "#E45A5A",
+    "info": "#4C8DFF"
+  },
+  "typography": {
+    "uiFont": "Outfit",
+    "displayFont": "Caveat",
+    "accentFont": "Permanent Marker",
+    "monoFont": "ui-monospace",
+    "scale": {
+      "xs": "11px",
+      "sm": "13px",
+      "base": "15px",
+      "lg": "18px",
+      "xl": "28px",
+      "2xl": "40px",
+      "display": "52px"
+    },
+    "rules": [
+      "Outfit for all UI and numerals (tabular-nums)",
+      "Caveat only for the person's name in the greeting",
+      "Permanent Marker only for tiny teal eyebrows (TODAY, PROPERTY-like labels)"
+    ]
+  },
+  "spacing": {
+    "density": "balanced",
+    "scale": [8, 12, 16, 20, 24, 32, 40],
+    "sectionSpacing": "28px",
+    "cardPadding": "22px"
+  },
+  "radius": {
+    "small": "10px",
+    "medium": "16px",
+    "large": "22px",
+    "rules": ["Large radii match the FieldQuote reference the user supplied"]
+  },
+  "elevation": {
+    "surface": "0 10px 30px rgba(20, 26, 34, 0.06)",
+    "popover": "0 16px 40px rgba(20, 26, 34, 0.12)",
+    "modal": "0 24px 60px rgba(20, 26, 34, 0.18)",
+    "rules": ["One navy featured card; other cards stay white/flat"]
+  },
+  "icons": {
+    "set": "inline SVG stroke",
+    "style": "1.75px stroke, round caps, 24 viewbox",
+    "emojiAllowed": false,
+    "rules": ["No emoji icons"]
+  },
+  "motion": {
+    "principle": "functional only",
+    "durationFast": "120ms",
+    "durationNormal": "200ms",
+    "easing": "cubic-bezier(0.16, 1, 0.3, 1)",
+    "allowedUses": ["tab switch fade", "theme token swap", "chart redraw"],
+    "forbiddenUses": ["scroll reveal", "hover lift on every card", "gradient text"]
+  },
+  "antiSlopConstraints": [
+    "No Inter/Geist",
+    "No purple",
+    "No bento-as-identity",
+    "No equal-weight stat cards — first card is navy and larger in meaning"
+  ]
+}

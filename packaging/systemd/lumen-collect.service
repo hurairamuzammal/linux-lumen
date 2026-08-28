@@ -1,0 +1,25 @@
+[Unit]
+Description=Lumen wellbeing collector
+Documentation=file://%h/.local/share/lumen
+# User-session only — never a system boot unit. Starts after GNOME is up,
+# stops with the desktop, and does not delay kernel/gdm/login.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/lumen-collect
+# Crash recovery only. Clean lock-fail or logout must not spin.
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=4
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=32M
+KillSignal=SIGTERM
+TimeoutStopSec=5
+# Frozen across suspend; no extra inhibit or lingering.
+
+[Install]
+WantedBy=graphical-session.target

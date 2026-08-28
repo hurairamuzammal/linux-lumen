@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Lumen</title>
+  <script>
+    (function () {
+      var t = "system";
+      try { t = localStorage.getItem("lumen-theme") || "system"; } catch (e) {}
+      var dark = t === "dark" || (t === "system" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      document.documentElement.style.colorScheme = dark ? "dark" : "light";
+    })();
+  </script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell" id="app">
+    <nav class="tabs" id="nav" aria-label="Primary">
+      <button class="tab is-on" data-view="home" type="button">Today</button>
+      <button class="tab" data-view="activity" type="button">Week</button>
+      <button class="tab" data-view="apps" type="button">Apps</button>
+      <button class="tab" data-view="battery" type="button">Battery</button>
+      <button class="tab" data-view="months" type="button">Month</button>
+    </nav>
+    <main class="main">
+      <div id="stage" class="stage"></div>
+    </main>
+  </div>
+  <div id="sheet" class="sheet" hidden>
+    <button class="sheet-scrim" type="button" data-close-sheet aria-label="Close"></button>
+    <div class="sheet-card" id="sheetCard" role="dialog" aria-modal="true"></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

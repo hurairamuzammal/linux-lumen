@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Lumen Collector
+Comment=Unused leftover — collector is started by systemd --user, not autostart
+Exec=lumen-collect
+Hidden=true
+X-GNOME-Autostart-enabled=false
+NoDisplay=true
