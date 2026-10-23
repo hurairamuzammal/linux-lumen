@@ -136,7 +136,7 @@ class LumenApp(Adw.Application):
         settings = WebKit.Settings()
         settings.set_enable_javascript(True)
         settings.set_allow_file_access_from_file_urls(True)
-        settings.set_allow_universal_access_from_file_urls(True)
+        settings.set_allow_universal_access_from_file_urls(False)
         settings.set_enable_write_console_messages_to_stdout(False)
         try:
             settings.set_enable_developer_extras(False)
@@ -146,6 +146,7 @@ class LumenApp(Adw.Application):
         self.view = WebKit.WebView(user_content_manager=manager)
         self.view.set_settings(settings)
         self.view.connect("load-changed", self._on_load)
+        self.view.connect("decide-policy", self._on_decide_policy)
         self.view.set_vexpand(True)
         self.view.set_hexpand(True)
         self._paint_webview_bg(theme)
@@ -180,7 +181,7 @@ class LumenApp(Adw.Application):
         html = web_root() / "index.html"
         self.view.load_uri(html.resolve().as_uri())
         self.win.present()
-        GLib.timeout_add_seconds(12, self._poll)
+        GLib.timeout_add_seconds(60, self._poll)
 
     def _make_menu(self) -> Gtk.MenuButton:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -222,7 +223,7 @@ class LumenApp(Adw.Application):
     def _toggle_pause(self) -> None:
         conf = store.load_collector_conf()
         paused = not bool(conf.get("paused"))
-        store.save_collector_conf({"paused": 1 if paused else 0})
+        store.set_tracking_paused(paused)
         self.push_state()
 
     def _set_theme(self, theme: str) -> None:
@@ -292,6 +293,23 @@ class LumenApp(Adw.Application):
             self._ready = True
             self.push_state()
 
+    def _on_decide_policy(self, _view, decision, decision_type) -> bool:
+        try:
+            if decision_type in (
+                WebKit.PolicyDecisionType.NAVIGATION_ACTION,
+                WebKit.PolicyDecisionType.NEW_WINDOW_ACTION,
+            ):
+                action = decision.get_navigation_action()
+                req = action.get_request() if action else None
+                uri = (req.get_uri() if req else "") or ""
+                allowed = (web_root() / "index.html").resolve().as_uri()
+                if uri and not uri.startswith(allowed):
+                    decision.ignore()
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _js_payload(self, *args) -> str:
         for arg in args:
             if arg is None or arg in (self,):
@@ -340,7 +358,9 @@ class LumenApp(Adw.Application):
             self.push_state()
             return
         if op == "theme":
-            theme = msg.get("theme") or "system"
+            theme = str(msg.get("theme") or "system")
+            if theme not in ("light", "dark", "system"):
+                theme = "system"
             conf = store.load_ui_conf()
             conf["theme"] = theme
             store.save_ui_conf(conf)
@@ -350,15 +370,21 @@ class LumenApp(Adw.Application):
             self.push_state()
             return
         if op == "pause":
-            store.save_collector_conf({"paused": 1 if msg.get("paused") else 0})
+            store.set_tracking_paused(bool(msg.get("paused")))
             self.push_state()
             return
         if op == "config":
             patch = {}
             if "idle_sec" in msg:
-                patch["idle_sec"] = int(msg["idle_sec"])
+                try:
+                    patch["idle_sec"] = max(30, min(3600, int(msg["idle_sec"])))
+                except (TypeError, ValueError):
+                    pass
             if "poll_sec" in msg:
-                patch["poll_sec"] = int(msg["poll_sec"])
+                try:
+                    patch["poll_sec"] = max(3, min(60, int(msg["poll_sec"])))
+                except (TypeError, ValueError):
+                    pass
             if patch:
                 store.save_collector_conf(patch)
             if "display_name" in msg:
@@ -366,12 +392,15 @@ class LumenApp(Adw.Application):
                 conf["display_name"] = str(msg["display_name"]).strip()[:40]
                 store.save_ui_conf(conf)
             if "theme" in msg:
+                theme = str(msg["theme"])
+                if theme not in ("light", "dark", "system"):
+                    theme = "system"
                 conf = store.load_ui_conf()
-                conf["theme"] = msg["theme"]
+                conf["theme"] = theme
                 store.save_ui_conf(conf)
-                apply_theme(str(msg["theme"]))
-                self._paint_webview_bg(str(msg["theme"]))
-                self._apply_shell_css(str(msg["theme"]))
+                apply_theme(theme)
+                self._paint_webview_bg(theme)
+                self._apply_shell_css(theme)
             self.push_state()
             return
         if op == "app":
@@ -400,14 +429,15 @@ class LumenApp(Adw.Application):
             Gio.AppInfo.launch_default_for_uri(path.as_uri(), None)
             return
 
-    def push_state(self) -> None:
+    def push_state(self, quiet: bool = False) -> None:
         if not self._ready or not self.view:
             return
         try:
             payload = store.build_state()
         except Exception as exc:
             payload = {"ok": False, "error": str(exc)}
-        self._eval(f"window.Lumen && window.Lumen.push({json.dumps(payload)})")
+        flag = "true" if quiet else "false"
+        self._eval(f"window.Lumen && window.Lumen.push({json.dumps(payload)}, {flag})")
         if self._pause_btn:
             paused = bool((payload.get("config") or {}).get("paused")) if isinstance(payload, dict) else False
             self._pause_btn.set_label("Resume tracking" if paused else "Pause tracking")
@@ -425,7 +455,7 @@ class LumenApp(Adw.Application):
 
     def _poll(self) -> bool:
         if self.win and self.win.is_visible():
-            self.push_state()
+            self.push_state(quiet=True)
         return True
 
 

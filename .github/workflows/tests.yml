@@ -1,16 +1,24 @@
-name: tests
+name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
-  python:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libglib2.0-dev libatspi2.0-dev
+      - name: Build C collector (zero warnings)
+        run: make collect CFLAGS="-std=c11 -Os -Wall -Wextra -Werror -fno-ident -ffunction-sections -fdata-sections -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE $(pkg-config --cflags glib-2.0 gio-2.0 atspi-2)"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Calendar and day-detail tests
-        run: python3 -m unittest tests.test_calendar -v
+      - name: Run full test suite
+        run: make test

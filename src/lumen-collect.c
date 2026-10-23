@@ -31,6 +31,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#define LUMEN_VERSION "1.0.0"
 #define MAGIC "LMN1"
 #define HDR_SIZE 128
 #define NAME_CAP 48
@@ -78,11 +79,11 @@ typedef struct {
 
 typedef struct {
     char data_dir[512];
-    char days_dir[512];
-    char months_dir[512];
-    char conf_path[512];
-    char current_path[512];
-    char lock_path[512];
+    char days_dir[544];
+    char months_dir[544];
+    char conf_path[544];
+    char current_path[544];
+    char lock_path[544];
     char day[16];
     FILE *fp;
     Header hdr;
@@ -136,7 +137,9 @@ static void local_day(char *out, time_t t) {
 }
 
 static int mkdir_p(const char *path) {
-    return g_mkdir_with_parents(path, 0755);
+    int rc = g_mkdir_with_parents(path, 0700);
+    (void)chmod(path, 0700);
+    return rc;
 }
 
 static void json_esc(const char *s, char *out, size_t cap) {
@@ -827,7 +830,7 @@ static void rollup_old_days(void) {
         time_t dt = day_start_local(ymd);
         if (!dt || today_t - dt < KEEP_DETAILED_DAYS * 86400)
             continue;
-        char path[600];
+        char path[820];
         snprintf(path, sizeof path, "%s/%s", C.days_dir, e->d_name);
         AppSum apps[128];
         int napp = 0;
@@ -837,36 +840,31 @@ static void rollup_old_days(void) {
         char month[8];
         memcpy(month, ymd, 7);
         month[7] = 0;
-        char mpath[600];
+        char mpath[820];
         snprintf(mpath, sizeof mpath, "%s/%s.json", C.months_dir, month);
         gchar *old = NULL;
         gsize oldn = 0;
         g_file_get_contents(mpath, &old, &oldn, NULL);
+        char needle[12];
+        snprintf(needle, sizeof needle, "\"%s\":", ymd + 8);
+        if (old && strstr(old, needle)) {
+            unlink(path);
+            g_free(old);
+            continue;
+        }
         GString *out = g_string_new("{\"month\":\"");
         g_string_append(out, month);
         g_string_append(out, "\",\"days\":{");
-        /* Keep existing days except the one we replace, then append ours. */
         int first = 1;
         if (old && oldn > 10) {
-            /* Naive merge: if this dd already in file, skip full rewrite via rebuild
-             * from scratch of keys is hard without a parser. We append-replace by
-             * dropping a previous '"dd":{...}' — keep it simple: if not present, insert. */
-            if (!strstr(old, ymd)) {
-                /* copy inner days object if present */
-                char *days = strstr(old, "\"days\":{");
-                if (days) {
-                    days += 8;
-                    char *end = strrchr(days, '}');
-                    if (end && end > days + 1) {
-                        g_string_append_len(out, days, (gssize)(end - days));
-                        first = (end - days) < 2;
-                    }
+            char *days = strstr(old, "\"days\":{");
+            if (days) {
+                days += 8;
+                char *end = strrchr(days, '}');
+                if (end && end > days + 1) {
+                    g_string_append_len(out, days, (gssize)(end - days));
+                    first = (end - days) < 2;
                 }
-            } else {
-                unlink(path);
-                g_string_free(out, TRUE);
-                g_free(old);
-                continue;
             }
         }
         if (!first)
@@ -895,7 +893,7 @@ static void rollup_old_days(void) {
             continue;
         int months = (cy - y) * 12 + (cm - mo);
         if (months > KEEP_MONTHS) {
-            char p[600];
+            char p[820];
             snprintf(p, sizeof p, "%s/%s", C.months_dir, e->d_name);
             unlink(p);
         }
@@ -909,16 +907,18 @@ static void write_current(guint8 state, const char *app, guint32 ram, guint64 id
     const char *bn[] = {"discharging", "charging", "full", "ac-idle", "unknown"};
     char esc[NAME_CAP * 2];
     json_esc(app, esc, sizeof esc);
-    char json[768];
+    char json[1024];
+    guint32 slice_start = C.cur.open ? C.cur.start : 0;
+    guint32 slice_sec = C.cur.open ? C.cur.dur : 0;
     snprintf(json, sizeof json,
              "{\"ts\":%u,\"day\":\"%s\",\"app\":\"%s\",\"state\":\"%s\",\"idle_ms\":%" PRIu64 ","
              "\"locked\":%s,\"paused\":%s,\"batt\":%u,\"batt_status\":\"%s\",\"power_mw\":%u,"
              "\"ram_kb\":%u,\"sleep_today\":%u,\"first_boot\":%u,\"poll_sec\":%d,\"idle_sec\":%d,"
-             "\"pid\":%d}\n",
+             "\"pid\":%d,\"slice_start\":%u,\"slice_sec\":%u}\n",
              now_u32(), C.day, esc, stn[state > 3 ? 0 : state], idle_ms,
              locked ? "true" : "false", C.paused ? "true" : "false", pct,
              bn[bst > 4 ? 4 : bst], mw, ram, C.hdr.sleep_sec, C.hdr.first_boot, C.poll_sec,
-             C.idle_sec, (int)getpid());
+             C.idle_sec, (int)getpid(), slice_start, slice_sec);
     g_file_set_contents(C.current_path, json, -1, NULL);
 }
 
@@ -1101,7 +1101,7 @@ static void paths_init(void) {
     mkdir_p(C.data_dir);
     mkdir_p(C.days_dir);
     mkdir_p(C.months_dir);
-    char cdir[512];
+    char cdir[544];
     g_strlcpy(cdir, C.conf_path, sizeof cdir);
     char *slash = strrchr(cdir, '/');
     if (slash) {
@@ -1111,9 +1111,10 @@ static void paths_init(void) {
 }
 
 static int take_lock(void) {
-    C.lock_fd = open(C.lock_path, O_CREAT | O_RDWR, 0644);
+    C.lock_fd = open(C.lock_path, O_CREAT | O_RDWR, 0600);
     if (C.lock_fd < 0)
         return 0;
+    (void)fchmod(C.lock_fd, 0600);
     if (flock(C.lock_fd, LOCK_EX | LOCK_NB) != 0) {
         close(C.lock_fd);
         C.lock_fd = -1;
@@ -1145,20 +1146,38 @@ static void print_once(void) {
            "suspend_sec=%.0f\n",
            app, (int)pid, rss_pid_kb(pid), idle, locked, pct, st, mw,
            clock_of(CLOCK_BOOTTIME) - clock_of(CLOCK_MONOTONIC));
+    if (C.session) {
+        g_object_unref(C.session);
+        C.session = NULL;
+    }
+    if (C.system) {
+        g_object_unref(C.system);
+        C.system = NULL;
+    }
+    atspi_exit();
 }
 
 int main(int argc, char **argv) {
+    umask(0077);
     memset(&C, 0, sizeof C);
     C.lock_fd = -1;
     paths_init();
     load_config();
 
+    if (argc > 1 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
+        printf("lumen-collect %s\n", LUMEN_VERSION);
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "--once") == 0) {
         print_once();
         return 0;
     }
     if (argc > 1 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
-        fprintf(stderr, "lumen-collect [--once]\n  records screen time, idle, lock, sleep, battery\n");
+        fprintf(stderr, "lumen-collect [--once | --version | --help]\n  records screen time, idle, lock, sleep, battery\n");
+        return 0;
+    }
+    if (C.paused) {
+        fprintf(stderr, "lumen-collect paused\n");
         return 0;
     }
 

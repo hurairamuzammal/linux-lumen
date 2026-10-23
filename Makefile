@@ -1,3 +1,7 @@
+VERSION := 1.0.0
+ARCH    := $(shell uname -m)
+DIST    := lumen-v$(VERSION)-linux-$(ARCH)
+
 PREFIX  ?= $(HOME)/.local
 BINDIR  := $(PREFIX)/bin
 DATADIR := $(PREFIX)/share/lumen
@@ -6,12 +10,12 @@ ICONDIR := $(PREFIX)/share/icons/hicolor/scalable/apps
 UNITDIR := $(HOME)/.config/systemd/user
 
 CC      ?= gcc
-CFLAGS  ?= -std=c11 -Os -Wall -Wextra -fno-ident -ffunction-sections -fdata-sections
+CFLAGS  ?= -std=c11 -Os -Wall -Wextra -fno-ident -ffunction-sections -fdata-sections -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
 CFLAGS  += $(shell pkg-config --cflags glib-2.0 gio-2.0 atspi-2)
-LDFLAGS ?= -Wl,--gc-sections -s
+LDFLAGS ?= -Wl,--gc-sections -Wl,-z,relro,-z,now -pie -s
 LIBS    := $(shell pkg-config --libs glib-2.0 gio-2.0 atspi-2)
 
-.PHONY: all collect clean install uninstall test
+.PHONY: all collect clean install uninstall test dist
 
 all: collect
 
@@ -26,7 +30,7 @@ clean:
 	rm -rf build
 
 test:
-	python3 -m unittest tests.test_calendar -v
+	python3 -m unittest discover -s tests -v
 
 install: collect
 	install -d $(BINDIR) $(DATADIR)/web/fonts $(APPDIR) $(ICONDIR) $(UNITDIR)
@@ -53,3 +57,20 @@ uninstall:
 	rm -f $(ICONDIR)/org.lumen.Wellbeing.svg
 	rm -f $(UNITDIR)/lumen-collect.service
 	rm -f $(HOME)/.config/autostart/lumen-collect.desktop
+
+dist: collect
+	@rm -rf build/$(DIST) build/$(DIST).tar.gz
+	@mkdir -p build/$(DIST)/build build/$(DIST)/src build/$(DIST)/scripts build/$(DIST)/ui build/$(DIST)/packaging build/$(DIST)/docs build/$(DIST)/tests
+	cp -a build/lumen-collect build/$(DIST)/build/
+	cp -a src/lumen-collect.c build/$(DIST)/src/
+	cp -a scripts/install.sh scripts/lumen build/$(DIST)/scripts/
+	cp -a ui/lumen_app.py ui/lumen_store.py ui/web build/$(DIST)/ui/
+	rm -f build/$(DIST)/ui/web/preview.html build/$(DIST)/ui/web/preview-data.json
+	cp -a packaging/. build/$(DIST)/packaging/
+	cp -a docs/. build/$(DIST)/docs/
+	cp -a tests/*.py build/$(DIST)/tests/
+	cp -a Makefile README.md SECURITY.md LICENSE build/$(DIST)/
+	tar -C build -czf build/$(DIST).tar.gz $(DIST)
+	@rm -rf build/$(DIST)
+	@cd build && sha256sum $(DIST).tar.gz > $(DIST).tar.gz.sha256
+	@echo "Built release archive: build/$(DIST).tar.gz"

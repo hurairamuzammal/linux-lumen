@@ -7,6 +7,7 @@ import json
 import os
 import pwd
 import re
+import signal
 import struct
 import subprocess
 import time
@@ -22,6 +23,7 @@ ST_NAMES = ("active", "idle", "lock", "sleep")
 BAT_NAMES = ("discharging", "charging", "full", "ac-idle", "unknown")
 HDR_SIZE = 128
 KEEP_DETAILED = 8
+COLLECTOR_UNIT = "lumen-collect.service"
 META_APPS = {"Idle", "Lock screen", "Sleep", "Desktop"}
 
 PRETTY = {
@@ -203,6 +205,58 @@ def summarize(parsed: dict[str, Any]) -> dict[str, Any]:
     return {"totals": totals, "apps": apps, "hourly": hourly}
 
 
+def apply_live(summ: dict[str, Any], parsed: dict[str, Any], current: dict[str, Any]) -> None:
+    """Add the still-open slice so totals move while you stay in one app."""
+    if current.get("paused"):
+        return
+    start = int(current.get("slice_start") or 0)
+    if start <= 0:
+        return
+    now = int(time.time())
+    ts = int(current.get("ts") or 0)
+    if ts and now - ts > 30:
+        return
+    live = max(0, now - start)
+    names = {"active": ST_ACTIVE, "idle": ST_IDLE, "lock": ST_LOCK, "sleep": ST_SLEEP}
+    st = names.get(str(current.get("state") or "active"), ST_ACTIVE)
+    app = str(current.get("app") or "")
+    already = 0
+    for iv in reversed(parsed.get("intervals") or []):
+        iv_start = iv.get("start")
+        iv_state = iv.get("state")
+        if iv_start is None or iv_state is None:
+            continue
+        if int(iv_start) == start and int(iv_state) == st:
+            already = int(iv.get("dur") or 0)
+            break
+    extra = live - already
+    if extra < 0:
+        extra = 0
+    if extra:
+        if st == ST_ACTIVE:
+            summ["totals"]["active"] += extra
+            summ["hourly"][datetime.fromtimestamp(now).hour] += extra
+        elif st == ST_IDLE:
+            summ["totals"]["idle"] += extra
+        elif st == ST_LOCK:
+            summ["totals"]["lock"] += extra
+        elif st == ST_SLEEP:
+            summ["totals"]["sleep"] += extra
+    ram = int(current.get("ram_kb") or 0)
+    if st != ST_ACTIVE or not app or app in META_APPS:
+        return
+    slot = next((a for a in summ["apps"] if a["app"] == app), None)
+    if slot is None:
+        slot = {"app": app, "label": pretty_app(app), "sec": 0, "ram_peak": 0, "ram_last": 0}
+        summ["apps"].append(slot)
+    if extra:
+        slot["sec"] += extra
+    if ram:
+        slot["ram_last"] = ram
+        slot["ram_peak"] = max(int(slot.get("ram_peak") or 0), ram)
+    summ["apps"].sort(key=lambda a: a["sec"], reverse=True)
+
+
 def load_current() -> dict[str, Any]:
     path = data_dir() / "current.json"
     try:
@@ -222,10 +276,33 @@ def load_ui_conf() -> dict[str, Any]:
     return {}
 
 
+def _private_mkdir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+
+
+def _private_write_text(path: Path, content: str) -> None:
+    _private_mkdir(path.parent)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        tmp.replace(path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def save_ui_conf(data: dict[str, Any]) -> None:
     path = ui_conf_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    _private_write_text(path, json.dumps(data, indent=2) + "\n")
 
 
 def load_collector_conf() -> dict[str, Any]:
@@ -246,20 +323,92 @@ def load_collector_conf() -> dict[str, Any]:
                 out[k] = int(v)
             except ValueError:
                 pass
+    out["idle_sec"] = max(30, min(3600, int(out.get("idle_sec", 180))))
+    out["poll_sec"] = max(3, min(60, int(out.get("poll_sec", 8))))
+    out["paused"] = 1 if out.get("paused") else 0
     return out
 
 
 def save_collector_conf(data: dict[str, Any]) -> None:
     cur = load_collector_conf()
     cur.update(data)
+    idle_sec = max(30, min(3600, int(cur.get("idle_sec", 180))))
+    poll_sec = max(3, min(60, int(cur.get("poll_sec", 8))))
+    paused = 1 if cur.get("paused") else 0
     path = collector_conf_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    _private_write_text(
+        path,
         "# lumen collector\n"
-        f"idle_sec={int(cur.get('idle_sec', 180))}\n"
-        f"poll_sec={int(cur.get('poll_sec', 8))}\n"
-        f"paused={1 if cur.get('paused') else 0}\n"
+        f"idle_sec={idle_sec}\n"
+        f"poll_sec={poll_sec}\n"
+        f"paused={paused}\n",
     )
+
+
+def _user_systemctl(*args: str) -> bool:
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", *args],
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _patch_current_paused(paused: bool) -> None:
+    path = data_dir() / "current.json"
+    cur = load_current()
+    cur["paused"] = bool(paused)
+    cur["ts"] = int(time.time())
+    if paused:
+        cur["slice_start"] = 0
+        cur["slice_sec"] = 0
+    try:
+        _private_write_text(path, json.dumps(cur) + "\n")
+    except OSError:
+        pass
+
+
+def _is_collector_pid(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    proc = Path(f"/proc/{pid}")
+    if not proc.exists():
+        return False
+    comm_file = proc / "comm"
+    try:
+        if comm_file.exists():
+            comm = comm_file.read_text(encoding="utf-8", errors="ignore").strip()
+            return comm.startswith("lumen-collect")
+    except OSError:
+        return False
+    return True
+
+
+def _stop_collector_pid() -> None:
+    info = collector_alive()
+    pid = int(info.get("pid") or 0)
+    if not _is_collector_pid(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def set_tracking_paused(paused: bool) -> None:
+    """Stop the collector until Resume. Login must not bring it back."""
+    save_collector_conf({"paused": 1 if paused else 0})
+    _patch_current_paused(paused)
+    if paused:
+        _user_systemctl("disable", "--now", COLLECTOR_UNIT)
+        if collector_alive().get("alive"):
+            _stop_collector_pid()
+        return
+    _user_systemctl("enable", "--now", COLLECTOR_UNIT)
 
 
 def default_display_name() -> str:
@@ -286,24 +435,184 @@ def collector_alive() -> dict[str, Any]:
         pid = int(lock.read_text().strip() or "0")
     except (OSError, ValueError):
         pid = 0
-    alive = bool(pid and Path(f"/proc/{pid}").exists())
+    alive = _is_collector_pid(pid)
     cur = load_current()
-    if not pid:
+    if not alive:
         pid = int(cur.get("pid") or 0)
-        alive = bool(pid and Path(f"/proc/{pid}").exists())
+        alive = _is_collector_pid(pid)
+    paused = bool(load_collector_conf().get("paused") or cur.get("paused"))
     return {
         "alive": alive,
         "pid": pid if alive else 0,
         "rss_kb": collector_rss_kb(pid) if alive else 0,
-        "paused": bool(cur.get("paused") or load_collector_conf().get("paused")),
+        "paused": paused,
+    }
+
+
+def _sysfs_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def _sysfs_int(path: Path) -> int | None:
+    raw = _sysfs_text(path)
+    if not raw:
+        return None
+    try:
+        return int(raw.split()[0])
+    except ValueError:
+        return None
+
+
+def _bat_dir() -> Path | None:
+    root = Path("/sys/class/power_supply")
+    if not root.is_dir():
+        return None
+    bats = sorted(p for p in root.iterdir() if p.name.startswith("BAT") and p.is_dir())
+    return bats[0] if bats else None
+
+
+def _ac_online() -> bool:
+    root = Path("/sys/class/power_supply")
+    if not root.is_dir():
+        return False
+    for p in root.iterdir():
+        if not p.is_dir():
+            continue
+        name = p.name.upper()
+        if name.startswith("BAT"):
+            continue
+        kind = _sysfs_text(p / "type").lower()
+        if name.startswith(("AC", "ADP")) or kind == "mains":
+            v = _sysfs_text(p / "online")
+            if v == "1":
+                return True
+    return False
+
+
+def _status_label(status: str, ac: bool) -> str:
+    if status == "charging":
+        return "Charging"
+    if status == "full":
+        return "Full"
+    if status == "discharging":
+        return "On battery"
+    if status in ("ac-idle", "not charging"):
+        return "Plugged in, not charging"
+    if ac:
+        return "Plugged in"
+    return "Unknown"
+
+
+def battery_snapshot(samples: list[dict[str, Any]] | None = None, current: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Live sysfs reading plus today's recorded samples."""
+    current = current or {}
+    samples = list(samples or [])
+    bat = _bat_dir()
+    ac = _ac_online()
+    pct = _sysfs_int(bat / "capacity") if bat else None
+    if pct is None:
+        raw = current.get("batt")
+        pct = int(raw) if raw is not None else None
+    st_raw = (_sysfs_text(bat / "status") if bat else "").lower()
+    if st_raw.startswith("charg"):
+        status = "charging"
+    elif st_raw.startswith("full"):
+        status = "full"
+    elif st_raw.startswith("discharg"):
+        status = "discharging"
+    elif st_raw.startswith("not charg"):
+        status = "ac-idle"
+    else:
+        status = str(current.get("batt_status") or "unknown")
+    energy_now = _sysfs_int(bat / "energy_now") if bat else None
+    energy_full = _sysfs_int(bat / "energy_full") if bat else None
+    energy_design = _sysfs_int(bat / "energy_full_design") if bat else None
+    charge_now = _sysfs_int(bat / "charge_now") if bat else None
+    charge_full = _sysfs_int(bat / "charge_full") if bat else None
+    charge_design = _sysfs_int(bat / "charge_full_design") if bat else None
+    voltage = _sysfs_int(bat / "voltage_now") if bat else None
+    power = _sysfs_int(bat / "power_now") if bat else None
+    current_now = _sysfs_int(bat / "current_now") if bat else None
+    if power is None and current_now is not None and voltage is not None:
+        power = abs(current_now) * abs(voltage) // 1_000_000
+    if energy_now is None and charge_now is not None and voltage is not None:
+        energy_now = charge_now * voltage // 1_000_000
+    if energy_full is None and charge_full is not None and voltage is not None:
+        energy_full = charge_full * voltage // 1_000_000
+    if energy_design is None and charge_design is not None and voltage is not None:
+        energy_design = charge_design * voltage // 1_000_000
+    watts = None
+    if power is not None:
+        watts = round(abs(power) / 1_000_000, 1)
+    elif current.get("power_mw"):
+        watts = round(int(current["power_mw"]) / 1000, 1)
+    voltage_v = round(voltage / 1_000_000, 2) if voltage else None
+    energy_wh = round(energy_now / 1_000_000, 1) if energy_now else None
+    full_wh = round(energy_full / 1_000_000, 1) if energy_full else None
+    design_wh = round(energy_design / 1_000_000, 1) if energy_design else None
+    health = None
+    if energy_full and energy_design:
+        health = max(0, min(100, round(100 * energy_full / energy_design)))
+    cycles = _sysfs_int(bat / "cycle_count") if bat else None
+    eta_sec = None
+    eta_kind = None
+    if watts and watts > 0.2:
+        if status == "discharging" and energy_now:
+            eta_sec = int(energy_now / abs(power) * 3600)
+            eta_kind = "empty"
+        elif status == "charging" and energy_now is not None and energy_full and energy_full > energy_now:
+            eta_sec = int((energy_full - energy_now) / abs(power) * 3600)
+            eta_kind = "full"
+    pcts = [int(s.get("pct") or 0) for s in samples if s.get("pct") is not None]
+    if pct is not None:
+        pcts.append(int(pct))
+    today_high = max(pcts) if pcts else None
+    today_low = min(pcts) if pcts else None
+    today_start = int(samples[0]["pct"]) if samples and samples[0].get("pct") is not None else None
+    today_delta = None
+    if pct is not None and today_start is not None:
+        today_delta = int(pct) - today_start
+    return {
+        "present": bool(bat) or pct is not None,
+        "name": bat.name if bat else "",
+        "pct": pct,
+        "status": status,
+        "status_label": _status_label(status, ac),
+        "ac": ac,
+        "watts": watts,
+        "voltage_v": voltage_v,
+        "energy_wh": energy_wh,
+        "full_wh": full_wh,
+        "design_wh": design_wh,
+        "health_pct": health,
+        "cycles": cycles if cycles and cycles > 0 else None,
+        "tech": _sysfs_text(bat / "technology") if bat else "",
+        "model": _sysfs_text(bat / "model_name") if bat else "",
+        "maker": _sysfs_text(bat / "manufacturer") if bat else "",
+        "level": _sysfs_text(bat / "capacity_level") if bat else "",
+        "eta_sec": eta_sec,
+        "eta_kind": eta_kind,
+        "today_high": today_high,
+        "today_low": today_low,
+        "today_start": today_start,
+        "today_delta": today_delta,
+        "samples_n": len(samples),
+        "power_mw": int(current.get("power_mw") or (round(watts * 1000) if watts else 0)),
     }
 
 
 def load_month_file(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text())
+        raw = path.read_text()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data, _ = json.JSONDecoder().raw_decode(raw)
         return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except Exception:
         return {}
 
 
@@ -378,6 +687,8 @@ def build_week() -> list[dict[str, Any]]:
         ymd = d.isoformat()
         parsed = parse_day_file(days_dir / f"{ymd}.lmn")
         summ = summarize(parsed)
+        if ymd == today.isoformat():
+            apply_live(summ, parsed, load_current())
         out.append(
             {
                 "day": ymd,
@@ -394,6 +705,112 @@ def build_week() -> list[dict[str, Any]]:
     return out
 
 
+def _day_stamp(summ: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:
+    t = summ.get("totals") or {}
+    return {
+        "a": int(t.get("active") or 0),
+        "i": int(t.get("idle") or 0),
+        "l": int(t.get("lock") or 0),
+        "s": int(t.get("sleep") or 0),
+        "boot": int(parsed.get("first_boot") or 0),
+        "apps": {a["app"]: int(a["sec"]) for a in summ.get("apps") or [] if a.get("app")},
+    }
+
+
+def _overlay_lmn_days(by_month: dict[str, dict[str, Any]]) -> None:
+    days_dir = data_dir() / "days"
+    if not days_dir.is_dir():
+        return
+    today = date.today().isoformat()
+    live = load_current()
+    for path in days_dir.glob("????-??-??.lmn"):
+        ymd = path.stem
+        try:
+            datetime.strptime(ymd, "%Y-%m-%d")
+        except ValueError:
+            continue
+        parsed = parse_day_file(path)
+        summ = summarize(parsed)
+        if ymd == today:
+            apply_live(summ, parsed, live)
+        key = ymd[:7]
+        slot = by_month.setdefault(key, {"month": key, "days": {}})
+        slot.setdefault("days", {})[ymd[8:10]] = _day_stamp(summ, parsed)
+
+
+def _persist_month_files(by_month: dict[str, dict[str, Any]]) -> None:
+    months_dir = data_dir() / "months"
+    try:
+        months_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    for key, blob in by_month.items():
+        incoming = blob.get("days") or {}
+        if not incoming:
+            continue
+        path = months_dir / f"{key}.json"
+        existing = load_month_file(path)
+        days = dict(existing.get("days") or {})
+        days.update(incoming)
+        try:
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"month": key, "days": days}, separators=(",", ":")))
+            tmp.replace(path)
+        except OSError:
+            continue
+
+
+def _summarize_month(key: str, days: dict[str, Any], *, icons: bool) -> dict[str, Any]:
+    active = idle = lock = sleep = 0
+    app_tot: dict[str, int] = defaultdict(int)
+    n = 0
+    day_active: dict[str, int] = {}
+    day_idle: dict[str, int] = {}
+    day_lock: dict[str, int] = {}
+    for dd in sorted(days):
+        rec = days.get(dd) or {}
+        if not isinstance(rec, dict):
+            continue
+        a = int(rec.get("a") or 0)
+        i = int(rec.get("i") or 0)
+        l = int(rec.get("l") or 0)
+        s = int(rec.get("s") or 0)
+        day_active[dd] = a
+        day_idle[dd] = i
+        day_lock[dd] = l
+        active += a
+        idle += i
+        lock += l
+        sleep += s
+        if a or i or l or s or rec.get("boot"):
+            n += 1
+        for name, sec in (rec.get("apps") or {}).items():
+            app_tot[name] += int(sec)
+    top = sorted(app_tot.items(), key=lambda x: x[1], reverse=True)[:8]
+    return {
+        "month": key,
+        "label": datetime.strptime(key + "-01", "%Y-%m-%d").strftime("%B %Y"),
+        "days_n": n,
+        "active": active,
+        "idle": idle,
+        "lock": lock,
+        "sleep": sleep,
+        "avg_active": int(active / n) if n else 0,
+        "top_apps": [
+            {
+                "app": a,
+                "label": pretty_app(a),
+                "sec": s,
+                **({"icon": icon_data_uri(a)} if icons else {}),
+            }
+            for a, s in top
+        ],
+        "day_active": day_active,
+        "day_idle": day_idle,
+        "day_lock": day_lock,
+    }
+
+
 def build_months() -> list[dict[str, Any]]:
     months_dir = data_dir() / "months"
     by_month: dict[str, dict[str, Any]] = {}
@@ -404,61 +821,14 @@ def build_months() -> list[dict[str, Any]]:
             days = data.get("days") or {}
             by_month[month] = {"month": month, "days": days}
 
-    # Fold current month from raw week files (more accurate than rolled-up).
-    today = date.today()
-    cur_key = today.strftime("%Y-%m")
-    month_days = by_month.setdefault(cur_key, {"month": cur_key, "days": {}})
-    days_map = month_days["days"]
-    for block in build_week():
-        ymd = block["day"]
-        if not ymd.startswith(cur_key):
-            continue
-        dd = ymd[8:10]
-        t = block["totals"]
-        apps = {a["app"]: a["sec"] for a in block["apps"]}
-        days_map[dd] = {
-            "a": t["active"],
-            "i": t["idle"],
-            "l": t["lock"],
-            "s": t["sleep"],
-            "boot": block.get("first_boot") or 0,
-            "apps": apps,
-        }
+    _overlay_lmn_days(by_month)
+    today_key = date.today().strftime("%Y-%m")
+    by_month.setdefault(today_key, {"month": today_key, "days": {}})
+    _persist_month_files(by_month)
 
     months = []
     for key in sorted(by_month.keys())[-12:]:
-        days = by_month[key].get("days") or {}
-        active = idle = lock = sleep = 0
-        app_tot: dict[str, int] = defaultdict(int)
-        n = 0
-        for rec in days.values():
-            if not isinstance(rec, dict):
-                continue
-            n += 1
-            active += int(rec.get("a") or 0)
-            idle += int(rec.get("i") or 0)
-            lock += int(rec.get("l") or 0)
-            sleep += int(rec.get("s") or 0)
-            for name, sec in (rec.get("apps") or {}).items():
-                app_tot[name] += int(sec)
-        top = sorted(app_tot.items(), key=lambda x: x[1], reverse=True)[:8]
-        months.append(
-            {
-                "month": key,
-                "label": datetime.strptime(key + "-01", "%Y-%m-%d").strftime("%B %Y"),
-                "days_n": n,
-                "active": active,
-                "idle": idle,
-                "lock": lock,
-                "sleep": sleep,
-                "avg_active": int(active / n) if n else 0,
-                "top_apps": [
-                    {"app": a, "label": pretty_app(a), "sec": s, "icon": icon_data_uri(a)}
-                    for a, s in top
-                ],
-                "day_active": {d: int((days[d] or {}).get("a") or 0) for d in sorted(days)},
-            }
-        )
+        months.append(_summarize_month(key, by_month[key].get("days") or {}, icons=True))
     return months
 
 
@@ -521,6 +891,11 @@ def build_state() -> dict[str, Any]:
     current = load_current()
     ui = load_ui_conf()
     col = load_collector_conf()
+    if col.get("paused"):
+        current["paused"] = True
+        current["slice_start"] = 0
+    apply_live(summ, parsed, current)
+    batt = battery_snapshot(parsed.get("battery"), current)
     week = build_week()
     display = ui.get("display_name") or default_display_name()
     hour = datetime.now().hour
@@ -558,13 +933,14 @@ def build_state() -> dict[str, Any]:
             "lock": summ["totals"]["lock"],
             "sleep": summ["totals"]["sleep"],
             "first_boot": parsed.get("first_boot") or current.get("first_boot") or 0,
-            "battery": current.get("batt"),
-            "battery_status": current.get("batt_status") or "unknown",
+            "battery": batt.get("pct") if batt.get("pct") is not None else current.get("batt"),
+            "battery_status": batt.get("status") or current.get("batt_status") or "unknown",
             "most_app": most["label"] if most else "—",
             "most_sec": most["sec"] if most else 0,
         },
         "hourly": summ["hourly"],
         "apps": decorate_apps(summ["apps"]),
+        "battery": batt,
         "timeline": timeline_from(parsed, current),
         "week": week,
         "report": weekly_report(),
@@ -680,6 +1056,13 @@ def _parse_gtk_named_colors(path: Path) -> dict[str, str]:
     return resolved
 
 
+def _safe_hex_color(value: str, fallback: str) -> str:
+    h = (value or "").strip()
+    if re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", h):
+        return h
+    return fallback
+
+
 def system_colors(want_dark: bool | None = None) -> dict[str, Any]:
     """Accent and window colors from the active Zorin/GTK theme."""
     if want_dark is None:
@@ -707,10 +1090,11 @@ def system_colors(want_dark: bool | None = None) -> dict[str, Any]:
                 break
         if parsed.get("accent_bg_color") or parsed.get("accent_color"):
             break
-    accent = parsed.get("accent_bg_color") or parsed.get("accent_color") or "#f6be1a"
-    line = parsed.get("accent_color") or accent
-    window = parsed.get("window_bg_color") or ("#2c281d" if want_dark else "#f6f5ea")
-    fg = parsed.get("window_fg_color") or ("#fce8ad" if want_dark else "#565014")
+    accent = _safe_hex_color(parsed.get("accent_bg_color") or parsed.get("accent_color") or "", "#f6be1a")
+    line = _safe_hex_color(parsed.get("accent_color") or "", accent)
+    window = _safe_hex_color(parsed.get("window_bg_color") or "", "#2c281d" if want_dark else "#f6f5ea")
+    fg = _safe_hex_color(parsed.get("window_fg_color") or "", "#fce8ad" if want_dark else "#565014")
+    on_accent = _safe_hex_color(parsed.get("accent_fg_color") or "", "#ffffff")
     r, g, b = _hex_rgb(accent)
     return {
         "theme": theme,
@@ -719,7 +1103,7 @@ def system_colors(want_dark: bool | None = None) -> dict[str, Any]:
         "window": window,
         "fg": fg,
         "ink": fg,
-        "on_accent": parsed.get("accent_fg_color") or "#ffffff",
+        "on_accent": on_accent,
         "rgb": [r, g, b],
         "dark": want_dark,
     }
@@ -957,15 +1341,32 @@ def weekly_report() -> dict[str, Any]:
 
 
 def month_grid(year: int, month: int) -> dict[str, Any]:
-    months = {m["month"]: m for m in build_months()}
+    month_rows = build_months()
+    months = {m["month"]: m for m in month_rows}
     key = f"{year:04d}-{month:02d}"
-    rec = months.get(key) or {}
+    rec = months.get(key) or _summarize_month(key, {}, icons=False)
     day_active = dict(rec.get("day_active") or {})
-    # Overlay raw week files (more accurate for the last 7 days).
+    day_idle = dict(rec.get("day_idle") or {})
+    day_lock = dict(rec.get("day_lock") or {})
     for block in build_week():
         ymd = block["day"]
         if ymd.startswith(key):
-            day_active[ymd[8:10]] = block["totals"]["active"]
+            dd = ymd[8:10]
+            tot = block["totals"]
+            day_active[dd] = tot["active"]
+            day_idle[dd] = tot["idle"]
+            day_lock[dd] = tot["lock"]
+    blob_days: dict[str, Any] = {}
+    rec_days = (load_month_file(data_dir() / "months" / f"{key}.json").get("days") or {})
+    if isinstance(rec_days, dict):
+        blob_days.update(rec_days)
+    for dd, active in day_active.items():
+        prev = dict(blob_days.get(dd) or {})
+        prev["a"] = int(active or 0)
+        prev["i"] = int(day_idle.get(dd) or 0)
+        prev["l"] = int(day_lock.get(dd) or 0)
+        blob_days[dd] = prev
+    totals = _summarize_month(key, blob_days, icons=True)
     cal = calendar.Calendar(firstweekday=0)  # Monday
     weeks = []
     today = date.today()
@@ -980,27 +1381,50 @@ def month_grid(year: int, month: int) -> dict[str, Any]:
             ymd = f"{key}-{dd}"
             cell_date = date(year, month, d)
             active = int(day_active.get(dd) or 0)
+            idle = int(day_idle.get(dd) or 0)
+            lock = int(day_lock.get(dd) or 0)
+            day_apps = []
+            rec_apps = (blob_days.get(dd) or {}).get("apps") or {}
+            if rec_apps:
+                for app_name, sec in sorted(rec_apps.items(), key=lambda x: x[1], reverse=True)[:6]:
+                    day_apps.append(
+                        {
+                            "app": app_name,
+                            "label": pretty_app(app_name),
+                            "sec": int(sec),
+                            "icon": icon_data_uri(app_name),
+                        }
+                    )
             row.append(
                 {
                     "d": d,
                     "ymd": ymd,
                     "active": active,
+                    "idle": idle,
+                    "lock": lock,
                     "is_today": cell_date == today,
                     "future": cell_date > today,
                     "recent": cutoff <= cell_date <= today,
-                    "has_data": active > 0,
+                    "has_data": bool(active or idle or lock),
+                    "apps": day_apps,
                 }
             )
         weeks.append(row)
+    known = sorted(m["month"] for m in month_rows if m.get("days_n") or m.get("active"))
+    if today.strftime("%Y-%m") not in known:
+        known.append(today.strftime("%Y-%m"))
+        known.sort()
     return {
         "month": key,
         "label": date(year, month, 1).strftime("%B %Y"),
         "year": year,
         "month_n": month,
         "weeks": weeks,
-        "totals": rec,
+        "totals": totals,
         "max_active": max([int(v) for v in day_active.values()] or [1]),
         "keep_days": KEEP_DETAILED,
+        "has_prev": bool(known) and key > known[0],
+        "has_next": (year, month) < (today.year, today.month),
     }
 
 
@@ -1011,16 +1435,12 @@ def _month_day_record(ymd: str) -> dict[str, Any]:
     return rec if isinstance(rec, dict) else {}
 
 
-def day_detail(ymd: str) -> dict[str, Any]:
-    try:
-        day = datetime.strptime(ymd, "%Y-%m-%d").date()
-    except ValueError:
-        return {"ok": False, "reason": "invalid"}
-    if day > date.today():
-        return {"ok": False, "reason": "future"}
-    age = (date.today() - day).days
+def _day_bundle(day: date) -> dict[str, Any]:
+    ymd = day.isoformat()
     parsed = parse_day_file(data_dir() / "days" / f"{ymd}.lmn")
     summ = summarize(parsed)
+    if ymd == date.today().isoformat():
+        apply_live(summ, parsed, load_current())
     detailed = bool(parsed.get("intervals"))
     if not detailed:
         coarse = _month_day_record(ymd)
@@ -1034,25 +1454,106 @@ def day_detail(ymd: str) -> dict[str, Any]:
             apps = []
             for name, sec in (coarse.get("apps") or {}).items():
                 apps.append(
-                    {"app": name, "label": pretty_app(name), "sec": int(sec), "ram_peak": 0, "ram_last": 0}
+                    {
+                        "app": name,
+                        "label": pretty_app(name),
+                        "sec": int(sec),
+                        "ram_peak": 0,
+                        "ram_last": 0,
+                    }
                 )
             apps.sort(key=lambda a: a["sec"], reverse=True)
             summ["apps"] = apps
-            if not summ["totals"]["sleep"]:
-                summ["totals"]["sleep"] = int(coarse.get("s") or 0)
             parsed["first_boot"] = int(coarse.get("boot") or 0)
+    return {"ymd": ymd, "parsed": parsed, "summ": summ, "detailed": detailed}
+
+
+def week_usage_around(day: date) -> dict[str, Any]:
+    monday = day - timedelta(days=day.weekday())
+    sunday = monday + timedelta(days=6)
+    today = date.today()
+    active = idle = lock = 0
+    days: list[dict[str, Any]] = []
+    cur = monday
+    while cur <= sunday:
+        future = cur > today
+        tot = {"active": 0, "idle": 0, "lock": 0}
+        if not future:
+            tot = _day_bundle(cur)["summ"]["totals"]
+            active += int(tot.get("active") or 0)
+            idle += int(tot.get("idle") or 0)
+            lock += int(tot.get("lock") or 0)
+        days.append(
+            {
+                "ymd": cur.isoformat(),
+                "label": cur.strftime("%a"),
+                "d": cur.day,
+                "active": int(tot.get("active") or 0),
+                "idle": int(tot.get("idle") or 0),
+                "lock": int(tot.get("lock") or 0),
+                "future": future,
+                "is_sel": cur == day,
+            }
+        )
+        cur += timedelta(days=1)
+    return {
+        "active": active,
+        "idle": idle,
+        "lock": lock,
+        "range_label": f"{monday.strftime('%-d %b')} – {sunday.strftime('%-d %b')}",
+        "days": days,
+    }
+
+
+def _public_apps(apps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for a in apps or []:
+        out.append(
+            {
+                "app": a.get("app") or "",
+                "label": a.get("label") or pretty_app(a.get("app") or ""),
+                "sec": int(a.get("sec") or 0),
+                "ram_peak": int(a.get("ram_peak") or 0),
+                "ram_last": int(a.get("ram_last") or 0),
+            }
+        )
+    return out
+
+
+def day_detail(ymd: str) -> dict[str, Any]:
+    try:
+        day = datetime.strptime(ymd, "%Y-%m-%d").date()
+    except ValueError:
+        return {"ok": False, "reason": "invalid"}
+    if day > date.today():
+        return {"ok": False, "reason": "future"}
+    age = (date.today() - day).days
+    bundle = _day_bundle(day)
+    parsed = bundle["parsed"]
+    summ = bundle["summ"]
+    week = week_usage_around(day)
     return {
         "ok": True,
         "day": ymd,
         "label": day.strftime("%A %-d %B"),
         "age_days": age,
         "recent": age < KEEP_DETAILED,
-        "detailed": detailed,
+        "detailed": bundle["detailed"],
         "totals": summ["totals"],
-        "apps": decorate_apps(summ["apps"][:12]),
+        "week_active": week["active"],
+        "week_idle": week["idle"],
+        "week_lock": week["lock"],
+        "week_label": week["range_label"],
+        "week_days": week["days"],
+        "prev_day": (day - timedelta(days=1)).isoformat(),
+        "next_day": (day + timedelta(days=1)).isoformat() if day < date.today() else "",
+        "apps": _public_apps(summ["apps"]),
         "hourly": summ["hourly"],
         "first_boot": parsed.get("first_boot") or 0,
         "empty": not (
-            summ["totals"]["active"] or summ["totals"]["idle"] or summ["totals"]["sleep"]
+            summ["totals"]["active"]
+            or summ["totals"]["idle"]
+            or summ["totals"]["lock"]
+            or summ["totals"]["sleep"]
         ),
     }

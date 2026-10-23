@@ -25,6 +25,7 @@
       <button class="tab" data-view="battery" type="button">Battery</button>
       <button class="tab" data-view="months" type="button">Month</button>
     </nav>
+    <div id="pauseBar" class="pause-bar" hidden>Tracking paused. Resume from the menu to start the collector again.</div>
     <main class="main">
       <div id="stage" class="stage"></div>
     </main>
@@ -33,6 +34,7 @@
     <button class="sheet-scrim" type="button" data-close-sheet aria-label="Close"></button>
     <div class="sheet-card" id="sheetCard" role="dialog" aria-modal="true"></div>
   </div>
+  <div id="calTip" class="cal-tip" hidden></div>
   <script src="app.js"></script>
 </body>
 </html>

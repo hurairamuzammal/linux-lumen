@@ -18,13 +18,29 @@ fi
 
 cmd="${1:-}"
 case "$cmd" in
+  --version|-v|version)
+    echo "Lumen 1.0.0"
+    ;;
+  --help|-h|help)
+    cat <<'EOF'
+Usage: lumen [COMMAND]
+
+Commands:
+  (none)              Launch the Lumen GTK 4 / libadwaita desktop app
+  status, --status    Print the collector's live current.json snapshot
+  collect, --collect  Run the lumen-collect background daemon directly
+  version, --version  Print version information
+  help, --help        Show this help message
+EOF
+    ;;
   collect|--collect)
     shift
     exec "${PREFIX}/bin/lumen-collect" "$@"
     ;;
   status|--status)
-    if [ -f "$HOME/.local/share/lumen/current.json" ]; then
-      cat "$HOME/.local/share/lumen/current.json"
+    DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/lumen"
+    if [ -f "$DATA_DIR/current.json" ]; then
+      cat "$DATA_DIR/current.json"
     else
       echo "collector has not written a snapshot yet"
     fi

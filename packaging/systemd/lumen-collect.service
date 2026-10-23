@@ -19,6 +19,9 @@ IOSchedulingClass=idle
 MemoryMax=32M
 KillSignal=SIGTERM
 TimeoutStopSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
 # Frozen across suspend; no extra inhibit or lingering.
 
 [Install]

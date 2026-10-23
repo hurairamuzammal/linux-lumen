@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "ui"))
 import lumen_store as store  # noqa: E402
 
 HDR = 128
-ST_ACTIVE, ST_IDLE = 0, 1
+ST_ACTIVE, ST_IDLE, ST_LOCK = 0, 1, 2
 
 
 def write_lmn(path: Path, first_boot: int, intervals: list[tuple[int, int, int, int, str]]) -> None:
@@ -77,6 +77,7 @@ class CalendarTests(unittest.TestCase):
                 [
                     (start, 66 * 60, ST_ACTIVE, 12000, "cursor"),
                     (start + 66 * 60, 600, ST_IDLE, 0, ""),
+                    (start + 66 * 60 + 600, 120, ST_LOCK, 0, ""),
                 ],
             )
         grid = store.month_grid(self.today.year, self.today.month)
@@ -96,10 +97,17 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(detail["age_days"], 7)
         self.assertEqual(detail["totals"]["active"], 66 * 60)
         self.assertEqual(detail["apps"][0]["app"], "cursor")
+        self.assertNotIn("icon", detail["apps"][0])
+        self.assertLess(len(json.dumps(detail)), 80_000)
         self.assertEqual(sum(detail["hourly"]), 66 * 60)
         today_cell = next(c for c in recent if c["is_today"])
         self.assertGreater(today_cell["active"], 0)
+        self.assertEqual(today_cell["idle"], 600)
+        self.assertEqual(today_cell["lock"], 120)
         self.assertTrue(today_cell["has_data"])
+        today_open = store.day_detail(self.today.isoformat())
+        self.assertGreaterEqual(today_open["week_active"], 66 * 60)
+        self.assertGreaterEqual(today_open["week_idle"], 600)
 
     def test_calendar_click_payload_matches_day_detail(self) -> None:
         day = self.today - timedelta(days=3)
@@ -122,6 +130,10 @@ class CalendarTests(unittest.TestCase):
         self.assertTrue(opened["ok"])
         self.assertEqual(opened["apps"][0]["label"], "Firefox")
         self.assertEqual(opened["totals"]["active"], 1800)
+        self.assertGreaterEqual(opened["week_active"], 1800)
+        self.assertTrue(opened["week_label"])
+        self.assertEqual(len(opened["week_days"]), 7)
+        self.assertTrue(opened["prev_day"])
 
     def test_coarse_month_rollup_for_older_days(self) -> None:
         old = self.today - timedelta(days=20)
@@ -151,6 +163,7 @@ class CalendarTests(unittest.TestCase):
         self.assertFalse(detail["recent"])
         self.assertEqual(detail["totals"]["active"], 5400)
         self.assertEqual(detail["apps"][0]["app"], "slack")
+        self.assertGreaterEqual(detail["week_active"], 5400)
 
     def test_empty_recent_day_still_opens(self) -> None:
         empty = (self.today - timedelta(days=1)).isoformat()
@@ -159,7 +172,38 @@ class CalendarTests(unittest.TestCase):
         self.assertTrue(detail["empty"])
         self.assertTrue(detail["recent"])
 
-    def test_month_nav_grid_has_seven_columns(self) -> None:
+    def test_previous_month_keeps_totals_avg_and_days(self) -> None:
+        prev = date(self.today.year, self.today.month, 1) - timedelta(days=1)
+        older = prev - timedelta(days=1)
+        for day, active, idle in ((older, 3600, 600), (prev, 7200, 1200)):
+            start = self._ts(day, 11)
+            write_lmn(
+                self.days / f"{day.isoformat()}.lmn",
+                start,
+                [(start, active, ST_ACTIVE, 4000, "firefox"), (start + active, idle, ST_IDLE, 0, "")],
+            )
+        grid = store.month_grid(prev.year, prev.month)
+        self.assertEqual(grid["totals"]["active"], 10800)
+        self.assertEqual(grid["totals"]["idle"], 1800)
+        self.assertEqual(grid["totals"]["days_n"], 2)
+        self.assertEqual(grid["totals"]["avg_active"], 5400)
+        cell = next(
+            c
+            for row in grid["weeks"]
+            for c in row
+            if c and c["ymd"] == prev.isoformat()
+        )
+        self.assertEqual(cell["active"], 7200)
+        self.assertTrue(cell["has_data"])
+        saved = store.load_month_file(store.data_dir() / "months" / f"{prev.strftime('%Y-%m')}.json")
+        self.assertEqual(int(saved["days"][f"{prev.day:02d}"]["a"]), 7200)
+        cur = store.month_grid(self.today.year, self.today.month)
+        self.assertTrue(cur["has_prev"])
+        self.assertFalse(cur["has_next"])
+        self.assertTrue(grid["has_next"])
+        self.assertFalse(grid["has_prev"])
+
+
         grid = store.month_grid(self.today.year, self.today.month)
         for row in grid["weeks"]:
             self.assertEqual(len(row), 7)
