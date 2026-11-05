@@ -147,22 +147,49 @@ html[data-theme="dark"] .hero .fig { color: var(--sage); }
 .chart-hero:has(.week-hits) canvas { pointer-events: none; }
 .week-hits {
   position: absolute;
-  inset: 0;
+  top: 28px;
+  left: 0;
+  right: 0;
+  bottom: 28px;
   display: grid;
   gap: 10px;
-  padding: 4px 28px 28px;
+  padding: 0 28px;
   z-index: 1;
 }
 .week-hit {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
   margin: 0;
   padding: 0;
   border: 0;
   background: transparent;
   border-radius: 8px;
   cursor: pointer;
+  outline: none;
+}
+.week-hit-highlight {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.09);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+html[data-theme="light"] .week-hit-highlight {
+  background: rgba(0, 0, 0, 0.08);
+}
+.week-hit:hover .week-hit-highlight,
+.week-hit.is-hot .week-hit-highlight,
+.week-hit:focus-visible .week-hit-highlight {
+  opacity: 1;
 }
 .week-hit.is-hot {
-  background: rgba(var(--accent-rgb), 0.12);
+  background: transparent;
 }
 .chart-wrap { height: 280px; }
 .legend {
@@ -781,12 +808,14 @@ html[data-theme="dark"] .wd-today-tag {
   flex-shrink: 0;
 }
 
+.sc-ho-kpis,
 .sc-ho-stats {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
+.sc-ho-kpi,
 .sc-ho-stat {
   display: flex;
   align-items: center;
@@ -799,6 +828,7 @@ html[data-theme="dark"] .wd-today-tag {
   color: var(--dim);
 }
 
+.sc-ho-kpi strong,
 .sc-ho-stat strong {
   margin-left: auto;
   color: var(--ink);
@@ -822,8 +852,6 @@ html[data-theme="dark"] .wd-today-tag {
   gap: 3px;
   border-top: 1px solid var(--line);
   padding-top: 5px;
-  overflow: hidden;
-  max-height: 52px;
 }
 
 .sc-ho-apps-title {
@@ -840,6 +868,19 @@ html[data-theme="dark"] .wd-today-tag {
   gap: 6px;
   font-size: 10.5px;
   min-width: 0;
+  height: 20px;
+}
+
+.sc-ho-app-row .app-ico.is-sm {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+
+.sc-ho-app-row .app-ico.is-sm img {
+  width: 12px;
+  height: 12px;
 }
 
 .sc-ho-app-name {
@@ -879,11 +920,38 @@ html[data-theme="dark"] .wd-today-tag {
   box-shadow: none;
 }
 .week-hit:hover {
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 8px;
+  background: transparent;
 }
-html[data-theme="light"] .week-hit:hover {
-  background: rgba(0, 0, 0, 0.04);
+
+/* Week Selection Summary Banner */
+.week-sel-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: color-mix(in srgb, var(--ink) 3.5%, var(--bg));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 14px;
+  margin: -8px 0 22px;
+  font-size: 12.5px;
+  flex-wrap: wrap;
+}
+.wsb-day {
+  font-weight: 650;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wsb-stats {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.wsb-stats .ik-item {
+  font-size: 12px;
 }
 
 .month-nav {

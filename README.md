@@ -6,7 +6,7 @@
 
 ### Native, Privacy-First Screen Time Tracker & Digital Wellbeing for Linux
 
-[![Release](https://img.shields.io/badge/release-v1.0.0-f6be1a?style=for-the-badge)](https://github.com/hurairamuzammal/linux-lumen/releases/tag/v1.0.0)
+[![Release](https://img.shields.io/badge/release-v1.0.1-f6be1a?style=for-the-badge)](https://github.com/hurairamuzammal/linux-lumen/releases/tag/v1.0.1)
 [![Distros](https://img.shields.io/badge/Distros-Ubuntu%20%7C%20Fedora%20%7C%20Arch%20%7C%20Zorin%20%7C%20Debian-3584e4?style=for-the-badge)](https://github.com/hurairamuzammal/linux-lumen)
 [![Session](https://img.shields.io/badge/Session-Wayland%20%26%20X11-2ec27e?style=for-the-badge)](https://github.com/hurairamuzammal/linux-lumen)
 [![Collector](https://img.shields.io/badge/Collector-C11%20(~32%20KB)-e05d44?style=for-the-badge)](src/lumen-collect.c)
@@ -205,12 +205,12 @@ sudo pacman -S --needed \
 
 ### 2. Install Lumen
 
-#### Option A: Install from Prebuilt Release (`v1.0.0` — Recommended)
+#### Option A: Install from Prebuilt Release (`v1.0.1` — Recommended)
 Download the latest release archive for Linux `x86_64` and run the installer:
 ```bash
-curl -fL https://github.com/hurairamuzammal/linux-lumen/releases/download/v1.0.0/lumen-v1.0.0-linux-x86_64.tar.gz -o lumen-v1.0.0-linux-x86_64.tar.gz
-tar -xzf lumen-v1.0.0-linux-x86_64.tar.gz
-cd lumen-v1.0.0-linux-x86_64
+curl -fL https://github.com/hurairamuzammal/linux-lumen/releases/download/v1.0.1/lumen-v1.0.1-linux-x86_64.tar.gz -o lumen-v1.0.1-linux-x86_64.tar.gz
+tar -xzf lumen-v1.0.1-linux-x86_64.tar.gz
+cd lumen-v1.0.1-linux-x86_64
 ./scripts/install.sh
 ```
 

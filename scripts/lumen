@@ -19,7 +19,7 @@ fi
 cmd="${1:-}"
 case "$cmd" in
   --version|-v|version)
-    echo "Lumen 1.0.0"
+    echo "Lumen 1.0.1"
     ;;
   --help|-h|help)
     cat <<'EOF'

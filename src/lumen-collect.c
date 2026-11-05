@@ -31,7 +31,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define LUMEN_VERSION "1.0.0"
+#define LUMEN_VERSION "1.0.1"
 #define MAGIC "LMN1"
 #define HDR_SIZE 128
 #define NAME_CAP 48

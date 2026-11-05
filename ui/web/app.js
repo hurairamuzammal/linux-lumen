@@ -549,7 +549,7 @@ function renderDaySquareCard({
   const actDur = fmtDur(active);
   const idlDur = fmtDur(idle);
   const lckDur = fmtDur(lock);
-  const topApps = (apps || []).slice(0, 3);
+  const topApps = (apps || []).slice(0, 2);
 
   const centerDurHtml = `<span class="sc-rc-dur${active ? "" : " is-empty"}">${active ? actDur : "—"}</span>`;
 
@@ -689,11 +689,25 @@ function viewActivity(d) {
         .map((w) => {
           const t = w.totals || {};
           const isSel = w.day === Lumen.selectedWeekDay ? " is-selected-bar" : "";
-          return `<button class="week-hit${isSel}" type="button" data-select-week-day="${escapeHtml(w.day)}" data-active="${t.active || 0}" data-idle="${t.idle || 0}" data-lock="${t.lock || 0}" aria-label="${escapeHtml(fmtCalDay(w.day))}"></button>`;
+          const daySec = (t.active || 0) + (t.idle || 0) + (t.lock || 0);
+          const maxSec = Math.max(1, ...week.map((x) => (x.totals.active || 0) + (x.totals.idle || 0) + (x.totals.lock || 0)));
+          const barPct = maxSec > 0 ? Math.min(100, Math.round((daySec / maxSec) * 100)) : 0;
+          return `<button class="week-hit${isSel}" type="button" data-select-week-day="${escapeHtml(w.day)}" data-day="${escapeHtml(w.day)}" data-active="${t.active || 0}" data-idle="${t.idle || 0}" data-lock="${t.lock || 0}" aria-label="${escapeHtml(fmtCalDay(w.day))}">
+            <span class="week-hit-highlight" style="height:${barPct}%;"></span>
+          </button>`;
         })
         .join("")}</div>
     </div>
     <p class="legend"><span><i class="sage"></i>Usage</span><span><i class="peach"></i>Idle</span><span><i class="lilac"></i>Lock</span></p>
+
+    <div class="week-sel-banner">
+      <span class="wsb-day">${escapeHtml(selDay.date_label || selDay.label || selDay.day)}${selDay.day === d.today ? ' <span class="wd-today-tag">Today</span>' : ''}</span>
+      <div class="wsb-stats">
+        <span class="ik-item"><span class="ik-dot sage"></span>Usage <strong>${fmtDur(selTotals.active || 0)}</strong></span>
+        <span class="ik-item"><span class="ik-dot peach"></span>Idle <strong>${fmtDur(selTotals.idle || 0)}</strong></span>
+        <span class="ik-item"><span class="ik-dot lilac"></span>Lock <strong>${fmtDur(selTotals.lock || 0)}</strong></span>
+      </div>
+    </div>
 
     <h3 class="section-title">Daily Activity</h3>
     <div class="square-cards-grid week-grid">${dayCardsHtml}</div>
@@ -1446,10 +1460,51 @@ function hydrateDay(detail) {
   return detail;
 }
 
+function showWeekBarTip(cell) {
+  const tip = document.getElementById("calTip");
+  if (!tip || !cell) return;
+  const ymd = cell.dataset.selectWeekDay || cell.dataset.day;
+  if (!ymd) return;
+
+  document.querySelectorAll("#stage .week-hit.is-hot, #stage [data-day].is-hot").forEach((el) => el.classList.remove("is-hot"));
+  cell.classList.add("is-hot");
+
+  const week = (Lumen.data && Lumen.data.week) || [];
+  const w = week.find((x) => x.day === ymd);
+  const t = (w && w.totals) || {};
+  const active = Number(cell.dataset.active) || t.active || 0;
+  const idle = Number(cell.dataset.idle) || t.idle || 0;
+  const lock = Number(cell.dataset.lock) || t.lock || 0;
+  const total = active + idle + lock;
+  const apps = (w && w.apps) || [];
+  const topApp = apps[0] ? `${apps[0].label || apps[0].app} · ${fmtDur(apps[0].sec)}` : "";
+  const isToday = ymd === (Lumen.data && Lumen.data.today);
+  const dayTitle = w ? (w.date_label ? `${w.label}, ${w.date_label}` : fmtCalDay(ymd)) : fmtCalDay(ymd);
+
+  tip.innerHTML = `
+    <div class="cal-tip-day">${escapeHtml(dayTitle)}${isToday ? ' <span class="wd-today-tag">Today</span>' : ''}</div>
+    <div class="cal-tip-row"><span class="ik-item"><span class="ik-dot sage"></span>Usage</span><strong>${fmtDur(active)}</strong></div>
+    <div class="cal-tip-row"><span class="ik-item"><span class="ik-dot peach"></span>Idle</span><strong>${fmtDur(idle)}</strong></div>
+    <div class="cal-tip-row"><span class="ik-item"><span class="ik-dot lilac"></span>Lock</span><strong>${fmtDur(lock)}</strong></div>
+    <div class="cal-tip-row" style="border-top:1px solid var(--line);padding-top:4px;margin-top:2px;"><span>Total</span><strong>${fmtDur(total)}</strong></div>
+    ${topApp ? `<div class="cal-tip-row" style="color:var(--dim);font-size:11px;"><span>Top App</span><strong>${escapeHtml(topApp)}</strong></div>` : ""}
+    <div style="font-size:10px;color:var(--accent);margin-top:6px;text-align:center;font-weight:600;">Click to select day ↓</div>`;
+  tip.hidden = false;
+
+  const r = cell.getBoundingClientRect();
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+  let x = r.left + r.width / 2 - tw / 2;
+  let y = r.top - th - 8;
+  if (y < 8) y = r.bottom + 8;
+  x = Math.max(8, Math.min(x, window.innerWidth - tw - 8));
+  tip.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+}
+
 function showCalTip(cell) {
   const tip = document.getElementById("calTip");
   if (!tip || !cell || !cell.dataset.day) return;
-  document.querySelectorAll("#stage [data-day].is-hot").forEach((el) => el.classList.remove("is-hot"));
+  document.querySelectorAll("#stage [data-day].is-hot, #stage .week-hit.is-hot").forEach((el) => el.classList.remove("is-hot"));
   cell.classList.add("is-hot");
   const st = hoverDayStats(cell);
   const week = weekTotalsSum();
@@ -1473,7 +1528,7 @@ function showCalTip(cell) {
 function hideCalTip() {
   const tip = document.getElementById("calTip");
   if (tip) tip.hidden = true;
-  document.querySelectorAll("#stage [data-day].is-hot").forEach((el) => el.classList.remove("is-hot"));
+  document.querySelectorAll("#stage [data-day].is-hot, #stage .week-hit.is-hot").forEach((el) => el.classList.remove("is-hot"));
 }
 
 function cssVar(name) {
@@ -1573,9 +1628,10 @@ function paintWeek(canvas, week) {
     ...week.map((d) => (d.totals.active || 0) + (d.totals.idle || 0) + (d.totals.lock || 0))
   );
   const gap = 10;
-  const bw = (w - pad * 2) / n - gap;
+  const totalGap = (n - 1) * gap;
+  const bw = Math.max(8, (w - pad * 2 - totalGap) / n);
   week.forEach((day, i) => {
-    const x = pad + i * ((w - pad * 2) / n);
+    const x = pad + i * (bw + gap);
     const a = day.totals.active || 0;
     const idl = day.totals.idle || 0;
     const l = day.totals.lock || 0;
@@ -1587,7 +1643,8 @@ function paintWeek(canvas, week) {
       [l, lilac],
     ];
     const isSel = day.day === Lumen.selectedWeekDay;
-    if (Lumen.selectedWeekDay && !isSel) {
+    const isHov = day.day === Lumen.hoveredWeekDay;
+    if (Lumen.selectedWeekDay && !isSel && !isHov) {
       ctx.globalAlpha = 0.45;
     } else {
       ctx.globalAlpha = 1.0;
@@ -1771,6 +1828,8 @@ document.getElementById("stage").addEventListener("click", (e) => {
     const ymd = selectWeekBtn.dataset.selectWeekDay;
     Lumen.selectedWeekDay = ymd;
     Lumen.render();
+    const newBtn = document.querySelector(`.week-hit[data-select-week-day="${ymd}"]`);
+    if (newBtn) showWeekBarTip(newBtn);
     return;
   }
   const selectCalBtn = e.target.closest("[data-select-cal-day]");
@@ -1834,10 +1893,25 @@ document.getElementById("stage").addEventListener("keydown", (e) => {
 });
 
 document.getElementById("stage").addEventListener("pointerover", (e) => {
+  const weekHit = e.target.closest(".week-hit");
+  if (weekHit) {
+    Lumen.hoveredWeekDay = weekHit.dataset.selectWeekDay;
+    paintCanvases(Lumen.data);
+    showWeekBarTip(weekHit);
+    return;
+  }
   const cell = e.target.closest("[data-day]");
   if (cell && !cell.disabled) showCalTip(cell);
 });
 document.getElementById("stage").addEventListener("pointerout", (e) => {
+  const weekHit = e.target.closest(".week-hit");
+  if (weekHit) {
+    if (e.relatedTarget && weekHit.contains(e.relatedTarget)) return;
+    Lumen.hoveredWeekDay = null;
+    paintCanvases(Lumen.data);
+    hideCalTip();
+    return;
+  }
   const cell = e.target.closest("[data-day]");
   if (!cell) return;
   if (e.relatedTarget && cell.contains(e.relatedTarget)) return;
